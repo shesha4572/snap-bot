@@ -51,7 +51,11 @@ SYSTEMD_DIR="/etc/systemd/system"
 load_env() {
     if [[ -f "$ENV_FILE" ]]; then
         # shellcheck disable=SC1090
-        set -o allexport; source "$ENV_FILE"; set +o allexport
+        set +e
+        set -o allexport
+        source "$ENV_FILE" 2>/dev/null
+        set +o allexport
+        set -e
     fi
 }
 
@@ -79,11 +83,11 @@ done
 # ══════════════════════════════════════════════════════════════════════════════
 if $MODE_STATUS; then
     header "Snap-Bot Timer Status"
-    systemctl --user status "$TIMER_NAME" --no-pager 2>/dev/null \
+    systemctl status "$TIMER_NAME" --no-pager 2>/dev/null \
         || warn "Timer not installed yet. Run ./deploy.sh to install."
     echo ""
     info "Next scheduled runs:"
-    systemctl --user list-timers "$TIMER_NAME" --no-pager 2>/dev/null || true
+    systemctl list-timers "$TIMER_NAME" --no-pager 2>/dev/null || true
     echo ""
     info "Device status:"
     "${SCRIPT_DIR}/.venv/bin/python" "${SCRIPT_DIR}/bot.py" --status 2>&1 || true
@@ -94,7 +98,7 @@ fi
 #  --logs
 # ══════════════════════════════════════════════════════════════════════════════
 if $MODE_LOGS; then
-    exec journalctl --user -u "${SERVICE_NAME}.service" -f
+    exec journalctl -u "${SERVICE_NAME}.service" -f
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -104,8 +108,8 @@ if $MODE_RUN_NOW; then
     load_env
     header "Running snap-bot immediately"
     info "Flags: ${SNAP_BOT_FLAGS:-none (live mode)}"
-    systemctl --user start "${SERVICE_NAME}.service" \
-        && info "Done! Check logs: journalctl --user -u ${SERVICE_NAME}.service -n 50" \
+    sudo systemctl start "${SERVICE_NAME}.service" \
+        && info "Done! Check logs: journalctl -u ${SERVICE_NAME}.service -n 50" \
         || err "Service start failed — is it installed? Run ./deploy.sh first."
     exit 0
 fi
@@ -175,7 +179,7 @@ EOF
 echo ""
 
 # Read current timer OnCalendar value from installed timer (if any) or the template
-CURRENT_CALENDAR=$(systemctl --user cat "$TIMER_NAME" 2>/dev/null \
+CURRENT_CALENDAR=$(systemctl cat "$TIMER_NAME" 2>/dev/null \
     | grep '^OnCalendar=' | head -1 | cut -d= -f2 || echo "")
 [[ -z "$CURRENT_CALENDAR" ]] && CURRENT_CALENDAR="daily"
 
@@ -191,52 +195,79 @@ if command -v systemd-analyze &>/dev/null; then
     fi
 fi
 
-# ── 5. Write .env file ────────────────────────────────────────────────────────
-header "Writing .env"
-cat > "$ENV_FILE" <<ENVEOF
-# snap-bot environment variables — managed by deploy.sh
-# Edit manually or run: ./deploy.sh --reconfigure
-OPENROUTER_API_KEY=${NEW_OPENROUTER_KEY}
-SMTP_USER=${NEW_SMTP_USER}
-SMTP_PASS=${NEW_SMTP_PASS}
-RECIPIENT_EMAIL=${NEW_RECIPIENT}
-SNAP_BOT_FLAGS=${NEW_FLAGS}
-ENVEOF
-chmod 600 "$ENV_FILE"
-info "Saved to ${ENV_FILE} (mode 600)."
+# ── 5. Write .env file and update config.json ─────────────────────────────────
+header "Writing .env & Updating config.json"
 
-# Also patch config.json with the email fields so the bot reads them consistently
 PYTHON="${SCRIPT_DIR}/.venv/bin/python"
-"$PYTHON" - <<PYEOF
-import json, pathlib, os
-cfg_path = pathlib.Path("${SCRIPT_DIR}/config.json")
-with open(cfg_path) as f:
-    cfg = json.load(f)
+if [[ ! -x "$PYTHON" ]]; then
+    PYTHON="$(command -v python3)"
+fi
+
+"$PYTHON" - "$SCRIPT_DIR" "$NEW_OPENROUTER_KEY" "$NEW_SMTP_USER" "$NEW_SMTP_PASS" "$NEW_RECIPIENT" "$NEW_FLAGS" <<'PYEOF'
+import sys
+import json
+import pathlib
+
+script_dir = pathlib.Path(sys.argv[1]).resolve()
+api_key   = sys.argv[2].strip()
+smtp_user = sys.argv[3].strip()
+smtp_pass = sys.argv[4].strip()
+recip     = sys.argv[5].strip()
+flags     = sys.argv[6].strip()
+
+# Safely write .env (wrap in quotes to preserve spaces/special chars)
+env_file = script_dir / ".env"
+with open(env_file, "w", encoding="utf-8") as f:
+    f.write("# snap-bot environment variables — managed by deploy.sh\n")
+    f.write("# Edit manually or run: ./deploy.sh --reconfigure\n")
+    f.write(f'OPENROUTER_API_KEY="{api_key}"\n')
+    f.write(f'SMTP_USER="{smtp_user}"\n')
+    f.write(f'SMTP_PASS="{smtp_pass}"\n')
+    f.write(f'RECIPIENT_EMAIL="{recip}"\n')
+    f.write(f'SNAP_BOT_FLAGS="{flags}"\n')
+
+# Patch config.json
+cfg_path = script_dir / "config.json"
+if cfg_path.exists():
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+else:
+    cfg = {}
+
 email = cfg.setdefault("email_notifications", {})
 nr    = cfg.setdefault("news_quote", {})
-smtp_user = "${NEW_SMTP_USER}"
-smtp_pass = "${NEW_SMTP_PASS}"
-recip     = "${NEW_RECIPIENT}"
-api_key   = "${NEW_OPENROUTER_KEY}"
-if smtp_user: email["smtp_user"]      = smtp_user
-if smtp_pass: email["smtp_password"]  = smtp_pass
-if recip:     email["recipient_email"]= recip
-if api_key:   nr["openrouter_api_key"]= api_key
-with open(cfg_path, "w") as f:
+
+if smtp_user: email["smtp_user"] = smtp_user
+if smtp_pass: email["smtp_password"] = smtp_pass
+if recip:     email["recipient_email"] = recip
+if api_key:   nr["openrouter_api_key"] = api_key
+
+with open(cfg_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2)
+
 print("  config.json updated.")
 PYEOF
 
+chmod 600 "$ENV_FILE"
+info "Saved to ${ENV_FILE} (mode 600)."
+
 # ── 6. Install / update systemd units ────────────────────────────────────────
 header "Installing systemd Service + Timer"
+
+# Template the actual directory into the service unit
+SERVICE_TMP=$(mktemp)
+sed "s|__DIR__|${SCRIPT_DIR}|g" "$SERVICE_SRC" > "$SERVICE_TMP"
 
 # Stamp the chosen calendar into the timer unit on disk
 TIMER_TMP=$(mktemp)
 sed "s|^OnCalendar=.*|OnCalendar=${NEW_CALENDAR}|" "$TIMER_SRC" > "$TIMER_TMP"
 
-sudo install -m 644 "$SERVICE_SRC"  "${SYSTEMD_DIR}/snap-bot@.service"
-sudo install -m 644 "$TIMER_TMP"    "${SYSTEMD_DIR}/snap-bot@${USER}.timer"
-rm "$TIMER_TMP"
+sudo install -m 644 "$SERVICE_TMP" "${SYSTEMD_DIR}/snap-bot@.service"
+sudo install -m 644 "$TIMER_TMP"   "${SYSTEMD_DIR}/${TIMER_NAME}"
+rm -f "$SERVICE_TMP" "$TIMER_TMP"
 
 sudo systemctl daemon-reload
 
@@ -259,4 +290,4 @@ echo "    ./deploy.sh --run-now       → fire immediately"
 echo "    ./deploy.sh --logs          → live journal log tail"
 echo "    ./deploy.sh --reconfigure   → change schedule / env vars"
 echo ""
-systemctl --user list-timers "${TIMER_NAME}" --no-pager 2>/dev/null || true
+systemctl list-timers "${TIMER_NAME}" --no-pager 2>/dev/null || true

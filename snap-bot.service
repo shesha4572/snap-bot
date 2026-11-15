@@ -6,9 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=%i
-WorkingDirectory=/home/%i/snap-bot
-EnvironmentFile=/home/%i/snap-bot/.env
-ExecStart=/home/%i/snap-bot/.venv/bin/python bot.py --now $SNAP_BOT_FLAGS
+WorkingDirectory=__DIR__
+EnvironmentFile=__DIR__/.env
+ExecStart=__DIR__/.venv/bin/python bot.py --now $SNAP_BOT_FLAGS
 StandardOutput=journal
 StandardError=journal
 # Give the full ADB flow up to 3 minutes before systemd kills it
