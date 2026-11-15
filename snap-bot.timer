@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapchat Shortcut Automation Bot – Schedule Timer
+Requires=snap-bot@%i.service
+
+[Timer]
+# Filled in by deploy.sh – do not edit manually; run deploy.sh --reconfigure instead
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

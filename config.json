@@ -1,0 +1,55 @@
+{
+  "device": "192.168.0.106:5555",
+  "shortcut_emoji": "\ud83d\ude42",
+  "news_quote": {
+    "enabled": true,
+    "openrouter_api_key": "",
+    "model": "openrouter/free"
+  },
+  "email_notifications": {
+    "enabled": true,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_user": "shesha4572@gmail.com",
+    "smtp_password": "",
+    "recipient_email": "shesha4572+snapbot@gmail.com"
+  },
+  "timings": {
+    "launch_delay_sec": 4.0,
+    "snap_capture_delay_sec": 2.0,
+    "caption_delay_sec": 1.5,
+    "send_to_menu_delay_sec": 2.5,
+    "shortcut_select_delay_sec": 1.5,
+    "send_confirm_delay_sec": 2.0
+  },
+  "coordinates": {
+    "shutter": [
+      540,
+      1858
+    ],
+    "caption_button": [
+      1005,
+      163
+    ],
+    "caption_dismiss": [
+      540,
+      400
+    ],
+    "send_to": [
+      878,
+      2148
+    ],
+    "shortcut_pill": [
+      194,
+      337
+    ],
+    "select_all": [
+      938,
+      689
+    ],
+    "final_send": [
+      960,
+      2140
+    ]
+  }
+}

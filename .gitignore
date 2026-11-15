@@ -1,0 +1,26 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets — never commit these
+.env
+env.sh
+.snapbot_env
+
+# ADB platform tools binary (large, install separately)
+platform-tools/
+
+# Runtime artefacts
+*.log
+run_*.log
+snap_caption_*.png
+debug/
+images/
+
+# OS
+.DS_Store
+Thumbs.db
