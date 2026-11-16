@@ -263,30 +263,126 @@ class SnapchatBot:
         logger.info(f"Typing caption via ADB: '{sanitized}'")
         self.run_adb("shell", "input", "text", sanitized)
 
-    def find_center_by_desc(self, query: str) -> tuple[int, int] | None:
-        """Dump UI and dynamically calculate center (x, y) of an element matching content-desc or text."""
+    def _bounds_to_center(self, bounds: str) -> tuple[int, int] | None:
+        """Parse bounds '[x1,y1][x2,y2]' into center (x, y)."""
+        if bounds.startswith("[") and "][" in bounds:
+            try:
+                p1, p2 = bounds.strip("[]").split("][")
+                x1, y1 = map(int, p1.split(","))
+                x2, y2 = map(int, p2.split(","))
+                return (x1 + x2) // 2, (y1 + y2) // 2
+            except Exception:
+                pass
+        return None
+
+    def get_ui_hierarchy(self) -> ET.Element | None:
+        """Dump UI and parse into XML ElementTree."""
         try:
             self.run_adb("shell", "uiautomator", "dump", "/sdcard/ui_dump.xml", check=False)
             res = self.run_adb("shell", "cat", "/sdcard/ui_dump.xml", check=False)
             if not res.stdout or "<hierarchy" not in res.stdout:
                 return None
-            root = ET.fromstring(res.stdout)
+            return ET.fromstring(res.stdout)
+        except Exception as e:
+            logger.debug(f"UI hierarchy dump failed: {e}")
+            return None
+
+    def find_center_by_desc(self, query: str) -> tuple[int, int] | None:
+        """Dump UI and dynamically calculate center (x, y) of an element matching content-desc or text."""
+        try:
+            root = self.get_ui_hierarchy()
+            if root is None:
+                return None
             for node in root.iter("node"):
                 desc = node.attrib.get("content-desc", "")
                 text = node.attrib.get("text", "")
                 if query.lower() in desc.lower() or query.lower() in text.lower():
                     bounds = node.attrib.get("bounds", "")
-                    if bounds.startswith("[") and "][" in bounds:
-                        p1, p2 = bounds.strip("[]").split("][")
-                        x1, y1 = map(int, p1.split(","))
-                        x2, y2 = map(int, p2.split(","))
-                        center_x = (x1 + x2) // 2
-                        center_y = (y1 + y2) // 2
-                        logger.info(f"Dynamically resolved '{query}' to ({center_x}, {center_y})")
-                        return center_x, center_y
+                    center = self._bounds_to_center(bounds)
+                    if center:
+                        logger.info(f"Dynamically resolved '{query}' to {center}")
+                        return center
         except Exception as e:
             logger.debug(f"Dynamic lookup for '{query}' failed: {e}")
         return None
+
+    def discard_active_draft(self, max_attempts: int = 5) -> bool:
+        """
+        Cleanly discard any active draft, dialog, or preview to restore
+        Snapchat to a clean camera viewfinder state.
+        """
+        logger.info("Checking for drafts/dialogs to discard...")
+        for attempt in range(1, max_attempts + 1):
+            root = self.get_ui_hierarchy()
+            if root is None:
+                self.run_adb("shell", "input", "keyevent", "4", check=False)
+                time.sleep(1.0)
+                continue
+
+            # 1. Check if already on clean camera screen
+            for node in root.iter("node"):
+                res_id = node.attrib.get("resource-id", "")
+                desc = node.attrib.get("content-desc", "")
+                if "camera_capture_button" in res_id or desc == "Camera Capture":
+                    logger.info("Snapchat is on clean camera viewfinder.")
+                    return True
+
+            # 2. Check for Abandon/Discard confirmation dialog
+            # Structure:
+            # - dialog_content (LinearLayout)
+            #   - child 0: alert_dialog_title ("Are you sure you want to abandon...")
+            #   - child 1: discard_alert_dialog_discard_view ("Save & Close")
+            #   - child 2: Abandon button (clickable View, text/desc empty)
+            #   - child 3: cancel_button ("Cancel")
+            abandon_target = None
+            for parent in root.iter("node"):
+                if "dialog_content" in parent.attrib.get("resource-id", ""):
+                    children = list(parent)
+                    for i, child in enumerate(children):
+                        if "discard_alert_dialog_discard_view" in child.attrib.get("resource-id", ""):
+                            if i + 1 < len(children):
+                                abandon_target = self._bounds_to_center(children[i + 1].attrib.get("bounds", ""))
+                            break
+                    if not abandon_target and len(children) >= 3:
+                        abandon_target = self._bounds_to_center(children[2].attrib.get("bounds", ""))
+                    break
+
+            if abandon_target:
+                logger.info(f"Discarding draft: tapping 'Abandon' on dialog at {abandon_target}")
+                self.tap(abandon_target[0], abandon_target[1], label="Abandon Dialog Button")
+                time.sleep(1.0)
+                continue
+
+            # 3. Check for Preview screen top-left Discard button ('X')
+            preview_discard = None
+            for node in root.iter("node"):
+                res_id = node.attrib.get("resource-id", "")
+                desc = node.attrib.get("content-desc", "")
+                if "preview_back_discard_button" in res_id or (desc == "Discard" and node.attrib.get("clickable") == "true"):
+                    bounds = node.attrib.get("bounds", "")
+                    center = self._bounds_to_center(bounds)
+                    if center and center[1] < 400:  # Top area
+                        preview_discard = center
+                        break
+
+            if preview_discard:
+                logger.info(f"Preview screen detected: tapping top-left discard button at {preview_discard}")
+                self.tap(preview_discard[0], preview_discard[1], label="Preview Discard Button")
+                time.sleep(1.0)
+                continue
+
+            # 4. If in Send-To screen or text/sticker drawer, press BACK
+            logger.info(f"Sub-screen detected (attempt {attempt}/{max_attempts}): pressing BACK...")
+            self.run_adb("shell", "input", "keyevent", "4", check=False)
+            time.sleep(1.0)
+
+        # Check final camera state
+        root = self.get_ui_hierarchy()
+        if root:
+            for node in root.iter("node"):
+                if "camera_capture_button" in node.attrib.get("resource-id", ""):
+                    return True
+        return False
 
     def launch_snapchat(self):
         """Launch Snapchat Landing Page and ensure clean camera state."""
@@ -307,11 +403,7 @@ class SnapchatBot:
 
         # Check for any residual draft or discard dialog on launch
         try:
-            discard_btn = self.find_center_by_desc("Discard")
-            if discard_btn:
-                logger.info(f"Discarding residual draft at {discard_btn}")
-                self.tap(discard_btn[0], discard_btn[1], label="Discard Dialog")
-                time.sleep(1.0)
+            self.discard_active_draft()
         except Exception as e:
             logger.debug(f"Startup clean note: {e}")
 
@@ -319,15 +411,7 @@ class SnapchatBot:
         """Discard active draft, return to home screen, and force stop Snapchat."""
         logger.info("Closing Snapchat cleanly and discarding any drafts...")
         try:
-            # Press BACK 3 times to back out of Send-To / Editor and dismiss any draft
-            for _ in range(3):
-                self.run_adb("shell", "input", "keyevent", "4", check=False)  # KEYCODE_BACK
-                time.sleep(0.3)
-            # Check if a 'Discard' prompt appeared and tap it
-            center = self.find_center_by_desc("Discard")
-            if center:
-                self.tap(center[0], center[1], label="Discard Dialog")
-                time.sleep(0.3)
+            self.discard_active_draft()
         except Exception as e:
             logger.debug(f"Discard draft note: {e}")
 
