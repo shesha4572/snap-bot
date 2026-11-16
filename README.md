@@ -123,7 +123,7 @@ Credentials are managed by `deploy.sh` via `.env`. The only fields you may want 
 
 ```json
 {
-  "device": "192.168.0.106:PORT",
+  "device": "192.168.0.106:5555",
   "shortcut_emoji": "🙂",
   "news_quote": {
     "enabled": true,
@@ -149,7 +149,7 @@ Credentials are managed by `deploy.sh` via `.env`. The only fields you may want 
 }
 ```
 
-> **Note:** The device port is auto-discovered on each run — Android 11+ uses a random ephemeral port for Wireless Debugging. You only need the IP address to be correct.
+> **Note:** Specify the full `<ip>:<port>` of your device in `device` (e.g. `192.168.0.106:5555` or whatever port is configured). Automatic port recognition has been removed to conserve CPU power on low-power devices like Raspberry Pi Zero.
 
 > **Coordinates** are calibrated for a 1080×2400 display (Samsung Galaxy M52 5G). Re-calibrate `shortcut_pill` and other taps if your phone has a different resolution.
 

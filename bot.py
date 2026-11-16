@@ -107,6 +107,10 @@ class SnapchatBot:
     def _test_adb_connect(self, target: str) -> bool:
         """Attempt 'adb connect target' and check if device is authorized and online."""
         try:
+            res = subprocess.run([self.adb, "devices"], capture_output=True, text=True, timeout=3)
+            for line in res.stdout.splitlines():
+                if target in line and "\tdevice" in line:
+                    return True
             subprocess.run([self.adb, "connect", target], capture_output=True, text=True, timeout=4)
             time.sleep(0.5)
             res = subprocess.run([self.adb, "devices"], capture_output=True, text=True, timeout=3)
@@ -117,103 +121,26 @@ class SnapchatBot:
             pass
         return False
 
-    def auto_discover_adb_port(self, target_ip: str) -> int | None:
-        """
-        Auto-discover the active Wireless Debugging port on target_ip:
-        1. Checks currently attached active devices in adb.
-        2. Queries mDNS services via 'adb mdns services'.
-        3. Runs high-speed socket scan across ephemeral port range (32000-47000).
-        """
-        logger.info(f"[Auto-Discovery] Searching for active ADB port on {target_ip}...")
-
-        # Step 1: Check existing active devices in ADB
-        try:
-            res = subprocess.run([self.adb, "devices"], capture_output=True, text=True, timeout=3)
-            for line in res.stdout.splitlines():
-                if target_ip in line and "\tdevice" in line:
-                    port = int(line.split()[0].split(":")[-1])
-                    logger.info(f"[Auto-Discovery] Reusing active connected port: {target_ip}:{port}")
-                    return port
-        except Exception as e:
-            logger.debug(f"[Auto-Discovery] Device check note: {e}")
-
-        # Step 2: Query mDNS services via ADB
-        try:
-            logger.info("[Auto-Discovery] Querying mDNS services...")
-            mdns = subprocess.run([self.adb, "mdns", "services"], capture_output=True, text=True, timeout=4)
-            for line in mdns.stdout.splitlines():
-                if target_ip in line:
-                    parts = line.split()
-                    for p in parts:
-                        if ":" in p and target_ip in p:
-                            port = int(p.split(":")[-1])
-                            logger.info(f"[Auto-Discovery] Discovered candidate port via mDNS: {target_ip}:{port}")
-                            if self._test_adb_connect(f"{target_ip}:{port}"):
-                                logger.info(f"[Auto-Discovery] Handshake confirmed on mDNS port: {port}")
-                                return port
-        except Exception as e:
-            logger.debug(f"[Auto-Discovery] mDNS note: {e}")
-
-        # Step 3: Fast multi-threaded socket scan across Android 11+ dynamic port range
-        import concurrent.futures
-        import socket
-
-        logger.info(f"[Auto-Discovery] Scanning dynamic port range on {target_ip}...")
-        # Prioritize 35000-46000 where Android dynamic ports typically land
-        ports_to_scan = [5555] + list(range(35000, 46000)) + list(range(30000, 35000)) + list(range(46000, 61001))
-
-        def _check_socket(port):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.2)
-                if s.connect_ex((target_ip, port)) == 0:
-                    return port
-            return None
-
-        open_ports = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=200) as executor:
-            futures = {executor.submit(_check_socket, p): p for p in ports_to_scan}
-            for fut in concurrent.futures.as_completed(futures):
-                res = fut.result()
-                if res:
-                    open_ports.append(res)
-
-        if open_ports:
-            logger.info(f"[Auto-Discovery] Detected open candidate ports: {open_ports}")
-            for p in open_ports:
-                target_cand = f"{target_ip}:{p}"
-                logger.info(f"[Auto-Discovery] Testing ADB handshake on {target_cand}...")
-                if self._test_adb_connect(target_cand):
-                    logger.info(f"[Auto-Discovery] SUCCESS: Handshake verified on {target_cand}!")
-                    return p
-
-        logger.error(f"[Auto-Discovery] Failed to locate any active ADB port on {target_ip}.")
-        return None
-
     def ensure_connected(self) -> bool:
-        """Verify device connection, auto-discovering new port if needed."""
-        target_ip = self.device.split(":")[0] if ":" in self.device else self.device
+        """Verify device connection."""
+        if not self.device:
+            try:
+                res = subprocess.run([self.adb, "devices"], capture_output=True, text=True, timeout=3)
+                for line in res.stdout.splitlines():
+                    if "\tdevice" in line:
+                        self.device = line.split()[0]
+                        logger.info(f"Connected to device {self.device}")
+                        return True
+            except Exception as e:
+                logger.debug(f"ADB devices check error: {e}")
+            logger.error("No device configured in config.json and no connected ADB device found.")
+            return False
 
-        # Check if current configured port works directly
-        if self.device and self._test_adb_connect(self.device):
+        if self._test_adb_connect(self.device):
             logger.info(f"Connected to device {self.device}")
             return True
 
-        # If disconnected or port changed, trigger auto-discovery
-        logger.warning(f"Connection to {self.device} failed or port changed. Starting auto-discovery...")
-        discovered_port = self.auto_discover_adb_port(target_ip)
-        if discovered_port:
-            new_target = f"{target_ip}:{discovered_port}"
-            self.device = new_target
-            self.config["device"] = new_target
-            try:
-                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(self.config, f, indent=2)
-                logger.info(f"[Auto-Discovery] Persisted new active target in config.json: {new_target}")
-            except Exception as e:
-                logger.debug(f"Could not persist new port to config.json: {e}")
-            return True
-
-        logger.error(f"Could not establish ADB connection to {target_ip}.")
+        logger.error(f"Could not establish ADB connection to {self.device}.")
         return False
 
     def get_status(self) -> dict:
