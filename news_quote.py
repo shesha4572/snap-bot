@@ -80,7 +80,7 @@ def generate_news_quote(
         "in India aged 20-25 who follow global tech, AI, and internet culture.\n\n"
         "RULES:\n"
         "- Choose the single most globally resonant story: tech/AI breakthroughs, "
-        "viral internet moments, absurd world news, or relatable work/money struggles.\n"
+        "viral internet moments, absurd world news, or relatable work struggles.\n"
         "- Skip hyper-local American stories: obscure US comedians, state-level bills, college sports.\n"
         "- Write a punchy one-liner: sarcastic, self-aware, or mildly absurd.\n"
         "- Quote must be 45–75 characters. No emojis. No quotation marks. Full sentence."
